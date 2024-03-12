@@ -3370,6 +3370,7 @@ dependencies = [
  "ratatui",
  "revm",
  "revm-inspectors",
+ "serde",
  "tracing",
 ]
 
