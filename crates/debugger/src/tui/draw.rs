@@ -368,8 +368,9 @@ impl TUIContext<'_> {
                         // otherwise find the source code for the element's index
                         self.debugger_context
                             .contracts_sources
-                            .sources_by_id
+                            .sources
                             .get(&(source_element.index?))
+                            .map(|m| m.get(&(contract_name.clone()))).flatten()
                             .map(|(source_code, _, _)| (source_element.clone(), source_code))
                     })
             })

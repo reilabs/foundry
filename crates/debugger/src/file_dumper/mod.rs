@@ -97,7 +97,7 @@ struct ContractsDump {
 #[derive(Serialize)]
 struct ContractsSourcesDump {
     ids_by_name: HashMap<String, Vec<u32>>,
-    sources_by_id: HashMap<u32, ContractSourceDetailsDump>,
+    sources: HashMap<u32, HashMap<String, ContractSourceDetailsDump>>,
 }
 
 #[derive(Serialize)]
@@ -163,17 +163,24 @@ fn to_contracts_dump(debugger_context: &DebuggerContext) -> ContractsDump {
 fn to_contracts_sources_dump(contracts_sources: &ContractSources) -> ContractsSourcesDump {
     ContractsSourcesDump {
         ids_by_name: contracts_sources.ids_by_name.clone(),
-        sources_by_id: contracts_sources
-            .sources_by_id
+        sources: contracts_sources
+            .sources
             .iter()
-            .map(|(id, (source_code, contract_bytecode, source_path))| {
+            .map(|(id, m)| {
                 (
                     *id,
-                    ContractSourceDetailsDump {
-                        source_code: source_code.clone(),
-                        contract_bytecode: contract_bytecode.clone(),
-                        source_path: source_path.clone(),
-                    },
+                    m.iter()
+                        .map(|(contract_name, (source_code, contract_bytecode, source_path))| {
+                            (
+                                (*contract_name).clone(),
+                                ContractSourceDetailsDump {
+                                    source_code: source_code.clone(),
+                                    contract_bytecode: contract_bytecode.clone(),
+                                    source_path: source_path.clone(),
+                                },
+                            )
+                        })
+                        .collect(),
                 )
             })
             .collect(),

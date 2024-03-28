@@ -282,13 +282,16 @@ impl ProjectCompiler {
     }
 }
 
+pub type SourceId = u32;
+pub type SourcePath = PathBuf;
+pub type SourceCode = String;
+pub type ContractName = String;
+
 /// Contract source code and bytecode.
 #[derive(Clone, Debug, Default)]
 pub struct ContractSources {
-    /// Map over artifacts' contract names -> vector of file IDs
-    pub ids_by_name: HashMap<String, Vec<u32>>,
-    /// Map over file_id -> (source code, contract, source path)
-    pub sources_by_id: FxHashMap<u32, (String, ContractBytecodeSome, Option<PathBuf>)>,
+    pub ids_by_name: HashMap<ContractName, Vec<SourceId>>,
+    pub sources: FxHashMap<SourceId, FxHashMap<ContractName, (SourceCode, ContractBytecodeSome, Option<SourcePath>)>>
 }
 
 impl ContractSources {
@@ -311,7 +314,7 @@ impl ContractSources {
                     deployed_bytecode: artifact.deployed_bytecode.clone(),
                 };
                 let contract = compact_to_contract(compact)?;
-                sources.insert(&id, file_id, source_code, contract, Some(abs_path));
+                sources.insert(&id, file_id, source_code, contract, Some(id.source.clone()));
             } else {
                 warn!(id = id.identifier(), "source not found");
             }
@@ -326,33 +329,36 @@ impl ContractSources {
         file_id: u32,
         source: String,
         bytecode: ContractBytecodeSome,
-        source_path: Option<PathBuf>,
+        source_path: Option<SourcePath>,
     ) {
         self.ids_by_name.entry(artifact_id.name.clone()).or_default().push(file_id);
-        self.sources_by_id.insert(file_id, (source, bytecode, source_path));
-    }
-
-    /// Returns the source for a contract by file ID.
-    pub fn get(&self, id: u32) -> Option<&(String, ContractBytecodeSome, Option<PathBuf>)> {
-        self.sources_by_id.get(&id)
+        self.sources.entry(file_id).or_default()
+            .insert(artifact_id.name.clone(), (source, bytecode, source_path));
     }
 
     /// Returns all sources for a contract by name.
     pub fn get_sources(
         &self,
         name: &str,
-    ) -> Option<impl Iterator<Item = (u32, &(String, ContractBytecodeSome, Option<PathBuf>))>> {
+    ) -> Option<impl Iterator<Item = (SourceId, &(SourceCode, ContractBytecodeSome, Option<SourcePath>))>> {
         self.ids_by_name
-            .get(name)
-            .map(|ids| ids.iter().filter_map(|id| Some((*id, self.sources_by_id.get(id)?))))
+            .get_key_value(name)
+            .map(|(name, ids)| ids.iter().filter_map(
+                |id| Some((*id, self.sources.get(id)?.get(name)?)))
+            )
     }
 
     /// Returns all (name, source) pairs.
     pub fn entries(
         &self,
-    ) -> impl Iterator<Item = (String, &(String, ContractBytecodeSome, Option<PathBuf>))> {
+    ) -> impl Iterator<Item = (ContractName, &(SourceCode, ContractBytecodeSome, Option<SourcePath>))> {
         self.ids_by_name.iter().flat_map(|(name, ids)| {
-            ids.iter().filter_map(|id| self.sources_by_id.get(id).map(|s| (name.clone(), s)))
+            ids.iter().filter_map(
+                |id| self.sources.get(id)
+                    .map(|m| m.get(name))
+                    .flatten()
+                    .map(|s| (name.clone(), s))
+            )
         })
     }
 }
