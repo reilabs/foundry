@@ -12,6 +12,7 @@ use foundry_compilers::{
     Solc, SolcConfig,
 };
 use rustc_hash::FxHashMap;
+use serde::Serialize;
 use std::{
     collections::{BTreeMap, HashMap},
     convert::Infallible,
@@ -261,9 +262,9 @@ impl ProjectCompiler {
                 let dev_functions =
                     artifact.abi.as_ref().map(|abi| abi.functions()).into_iter().flatten().filter(
                         |func| {
-                            func.name.is_test() ||
-                                func.name.eq("IS_TEST") ||
-                                func.name.eq("IS_SCRIPT")
+                            func.name.is_test()
+                                || func.name.eq("IS_TEST")
+                                || func.name.eq("IS_SCRIPT")
                         },
                     );
 
@@ -288,10 +289,13 @@ pub type SourceCode = String;
 pub type ContractName = String;
 
 /// Contract source code and bytecode.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct ContractSources {
     pub ids_by_name: HashMap<ContractName, Vec<SourceId>>,
-    pub sources: FxHashMap<SourceId, FxHashMap<ContractName, (SourceCode, ContractBytecodeSome, Option<SourcePath>)>>
+    pub sources: FxHashMap<
+        SourceId,
+        FxHashMap<ContractName, (SourceCode, ContractBytecodeSome, Option<SourcePath>)>,
+    >,
 }
 
 impl ContractSources {
@@ -331,8 +335,13 @@ impl ContractSources {
         bytecode: ContractBytecodeSome,
         source_path: Option<SourcePath>,
     ) {
+        // println!("-----------------------START");
+        // println!("insert {:#?} {:#?} {:#?} {:#?}", artifact_id, file_id, source, source_path);
+        // println!("-----------------------END");
         self.ids_by_name.entry(artifact_id.name.clone()).or_default().push(file_id);
-        self.sources.entry(file_id).or_default()
+        self.sources
+            .entry(file_id)
+            .or_default()
             .insert(artifact_id.name.clone(), (source, bytecode, source_path));
     }
 
@@ -340,25 +349,23 @@ impl ContractSources {
     pub fn get_sources(
         &self,
         name: &str,
-    ) -> Option<impl Iterator<Item = (SourceId, &(SourceCode, ContractBytecodeSome, Option<SourcePath>))>> {
-        self.ids_by_name
-            .get_key_value(name)
-            .map(|(name, ids)| ids.iter().filter_map(
-                |id| Some((*id, self.sources.get(id)?.get(name)?)))
-            )
+    ) -> Option<
+        impl Iterator<Item = (SourceId, &(SourceCode, ContractBytecodeSome, Option<SourcePath>))>,
+    > {
+        self.ids_by_name.get_key_value(name).map(|(name, ids)| {
+            ids.iter().filter_map(|id| Some((*id, self.sources.get(id)?.get(name)?)))
+        })
     }
 
     /// Returns all (name, source) pairs.
     pub fn entries(
         &self,
-    ) -> impl Iterator<Item = (ContractName, &(SourceCode, ContractBytecodeSome, Option<SourcePath>))> {
+    ) -> impl Iterator<Item = (ContractName, &(SourceCode, ContractBytecodeSome, Option<SourcePath>))>
+    {
         self.ids_by_name.iter().flat_map(|(name, ids)| {
-            ids.iter().filter_map(
-                |id| self.sources.get(id)
-                    .map(|m| m.get(name))
-                    .flatten()
-                    .map(|s| (name.clone(), s))
-            )
+            ids.iter().filter_map(|id| {
+                self.sources.get(id).map(|m| m.get(name)).flatten().map(|s| (name.clone(), s))
+            })
         })
     }
 }
