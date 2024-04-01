@@ -26,18 +26,23 @@ impl<'a> FileDumper<'a> {
     }
 
     pub fn run(&mut self) -> Result<()> {
-        let data = DebuggerDump::from(self.debugger_context);
+        let data = DebuggerDump::from(self.debugger_context)?;
         write_json_file(self.path, &data).unwrap();
+        // let filename = format!(
+        //     "./{}.json",
+        //     self.debugger_context.contracts_sources.ids_by_name.keys().count()
+        // );
+        // let out_path = Path::new(&filename);
+        // write_json_file(&out_path, &self.debugger_context.contracts_sources).unwrap();
         Ok(())
     }
 }
 
 impl DebuggerDump {
-    fn from(debugger_context: &DebuggerContext) -> DebuggerDump {
-        Self {
-            contracts: to_contracts_dump(debugger_context),
-            executions: to_executions_dump(debugger_context),
-        }
+    fn from(debugger_context: &DebuggerContext) -> Result<DebuggerDump> {
+        let contracts = to_contracts_dump(debugger_context)?;
+        let executions = to_executions_dump(debugger_context);
+        Ok(Self { contracts, executions })
     }
 }
 
@@ -96,8 +101,8 @@ struct ContractsDump {
 
 #[derive(Serialize)]
 struct ContractsSourcesDump {
-    ids_by_name: HashMap<String, Vec<u32>>,
-    sources: HashMap<u32, HashMap<String, ContractSourceDetailsDump>>,
+    ids_by_name: HashMap<String, Vec<String>>,
+    sources: HashMap<String, HashMap<String, ContractSourceDetailsDump>>,
 }
 
 #[derive(Serialize)]
@@ -153,36 +158,71 @@ fn to_pc_ic_map_dump(pc_ic_map: &(PcIcMap, PcIcMap)) -> PcIcMapDump {
     PcIcMapDump { create_code_map, runtime_code_map }
 }
 
-fn to_contracts_dump(debugger_context: &DebuggerContext) -> ContractsDump {
-    ContractsDump {
-        identified_calls: debugger_context.identified_contracts.clone(),
-        sources: to_contracts_sources_dump(&debugger_context.contracts_sources),
-    }
+fn to_contracts_dump(debugger_context: &DebuggerContext) -> Result<ContractsDump> {
+    let identified_calls = debugger_context.identified_contracts.clone();
+    let sources = to_contracts_sources_dump(&debugger_context.contracts_sources)?;
+    Ok(ContractsDump { identified_calls, sources })
 }
 
-fn to_contracts_sources_dump(contracts_sources: &ContractSources) -> ContractsSourcesDump {
-    ContractsSourcesDump {
-        ids_by_name: contracts_sources.ids_by_name.clone(),
-        sources: contracts_sources
-            .sources
-            .iter()
-            .map(|(id, m)| {
-                (
-                    *id,
-                    m.iter()
-                        .map(|(contract_name, (source_code, contract_bytecode, source_path))| {
-                            (
-                                (*contract_name).clone(),
-                                ContractSourceDetailsDump {
-                                    source_code: source_code.clone(),
-                                    contract_bytecode: contract_bytecode.clone(),
-                                    source_path: source_path.clone(),
-                                },
-                            )
-                        })
-                        .collect(),
-                )
-            })
-            .collect(),
-    }
+fn get_source_path_from_id(
+    source_id: &u32,
+    contract_name: &String,
+    contracts_sources: &ContractSources,
+) -> Result<String> {
+    Ok(contracts_sources
+        .sources
+        .get(source_id)
+        .unwrap()
+        .get(contract_name)
+        .unwrap()
+        .2
+        .as_ref()
+        .unwrap()
+        .clone()
+        .to_string_lossy()
+        .into_owned())
+}
+
+fn to_contracts_sources_dump(contracts_sources: &ContractSources) -> Result<ContractsSourcesDump> {
+    let ids_by_name: HashMap<String, Vec<String>> = contracts_sources
+        .ids_by_name
+        .clone()
+        .iter_mut()
+        .map(|(name, ids)| {
+            let vec_str: Vec<String> = ids
+                .iter_mut()
+                .map(|id| {
+                    let source_path: String =
+                        get_source_path_from_id(id, name, contracts_sources).unwrap();
+                    source_path
+                })
+                .collect();
+            (name.to_owned(), vec_str)
+        })
+        .collect();
+    // println!("contracts_sources.ids_by_name {:#?}", contracts_sources.ids_by_name);
+    // println!("ids_by_name {:#?}", ids_by_name);
+    // println!("contracts_sources.sources {:#?}", contracts_sources.sources.keys());
+    let mut sources = HashMap::new();
+    contracts_sources.sources.iter().for_each(|(_id, m)| {
+        m.iter().for_each(|(contract_name, (source_code, contract_bytecode, source_path))| {
+            let contract = ContractSourceDetailsDump {
+                source_code: source_code.clone(),
+                contract_bytecode: contract_bytecode.clone(),
+                source_path: source_path.clone(),
+            };
+            let source_path_key = source_path.clone().unwrap().to_string_lossy().into_owned();
+            if sources.contains_key(&source_path_key) {
+                let value: &mut HashMap<String, ContractSourceDetailsDump> =
+                    sources.get_mut(&source_path_key).unwrap();
+                value.insert(contract_name.clone(), contract);
+            } else {
+                let mut value = HashMap::new();
+                value.insert(contract_name.clone(), contract);
+                sources.insert(source_path_key, value);
+            }
+        })
+    });
+    let contract = ContractsSourcesDump { ids_by_name, sources };
+    Ok(contract)
 }
