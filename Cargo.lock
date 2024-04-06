@@ -3220,6 +3220,7 @@ dependencies = [
  "foundry-evm",
  "foundry-wallets",
  "indicatif",
+ "itertools 0.12.1",
  "once_cell",
  "regex",
  "serde",

@@ -10,7 +10,7 @@ use alloy_primitives::{Address, Bytes};
 use ethers_providers::Middleware;
 use eyre::{Context, OptionExt, Result};
 use foundry_cheatcodes::ScriptWallets;
-use foundry_cli::utils::get_cached_entry_by_name;
+use foundry_cli::utils::{get_cached_entry_by_name, get_output_artifact};
 use foundry_common::{
     compile::{self, ContractSources, ProjectCompiler},
     provider::ethers::try_get_http_provider,
@@ -177,13 +177,18 @@ impl PreprocessedState {
         // If we still don't have target path, find it by name in the compilation cache.
         let target_path = if let Some(target_path) = target_path {
             target_path
-        } else {
+        } else if project.cached {
             let target_name = target_name.clone().expect("was set above");
             let cache = SolFilesCache::read_joined(&project.paths)
                 .wrap_err("Could not open compiler cache")?;
             let (path, _) = get_cached_entry_by_name(&cache, &target_name)
                 .wrap_err("Could not find target contract in cache")?;
             path
+        } else {
+            // We have no cache
+            let target_name = target_name.clone().expect("was set above");
+            let output_artifact = get_output_artifact(&target_name, &output).unwrap();
+            output_artifact
         };
 
         let target_path = project.root().join(target_path);
