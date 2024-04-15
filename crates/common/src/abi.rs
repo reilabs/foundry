@@ -61,9 +61,9 @@ pub fn abi_decode_calldata(
     }?;
 
     // in case the decoding worked but nothing was decoded
-    if res.is_empty() {
-        eyre::bail!("no data was decoded")
-    }
+    // if res.is_empty() {
+    //     eyre::bail!("no data was decoded")
+    // }
 
     Ok(res)
 }
