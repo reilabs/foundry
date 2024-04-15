@@ -114,10 +114,10 @@ pub fn get_output_artifact(target_name: &str, output: &ProjectCompileOutput) -> 
     let artifact = output
         .artifact_ids()
         .filter(|(artifact_id, _)| artifact_id.name.as_str() == target_name)
-        .map(|(artifact_id, _)| artifact_id.source)
+        .map(|(artifact_id, _)| { eprintln!("{:?}", artifact_id); artifact_id.source})
         .exactly_one();
     let Ok(artifact) = artifact else {
-        eyre::bail!("Multiple contracts with name {} found", target_name)
+        eyre::bail!("Multiple or none contracts with name {} found", target_name)
     };
     Ok(artifact)
 }
