@@ -1,7 +1,10 @@
-//! Contains various tests for checking `forge test`
-use foundry_common::rpc;
+//! Contains various tests for `forge test`.
+
 use foundry_config::Config;
-use foundry_test_utils::util::{OutputExt, OTHER_SOLC_VERSION, SOLC_VERSION};
+use foundry_test_utils::{
+    rpc,
+    util::{OutputExt, OTHER_SOLC_VERSION, SOLC_VERSION},
+};
 use std::{path::PathBuf, str::FromStr};
 
 // tests that test filters are handled correctly
@@ -525,4 +528,19 @@ contract GasLimitTest is Test {
     .unwrap();
 
     cmd.args(["test", "-vvvv", "--isolate", "--disable-block-gas-limit"]).assert_success();
+});
+
+forgetest!(test_match_path, |prj, cmd| {
+    prj.add_source(
+        "dummy",
+        r"  
+contract Dummy {
+    function testDummy() public {}
+}
+",
+    )
+    .unwrap();
+
+    cmd.args(["test", "--match-path", "src/dummy.sol"]);
+    cmd.assert_success()
 });

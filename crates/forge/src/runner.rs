@@ -1,12 +1,13 @@
 //! The Forge test runner.
 
 use crate::{
-    multi_runner::is_matching_test,
+    multi_runner::{is_matching_test, TestContract},
     result::{SuiteResult, TestKind, TestResult, TestSetup, TestStatus},
     TestFilter, TestOptions,
 };
-use alloy_json_abi::{Function, JsonAbi};
-use alloy_primitives::{Address, Bytes, U256};
+use alloy_dyn_abi::DynSolValue;
+use alloy_json_abi::Function;
+use alloy_primitives::{Address, U256};
 use eyre::Result;
 use foundry_common::{
     contracts::{ContractsByAddress, ContractsByArtifact},
@@ -20,9 +21,9 @@ use foundry_evm::{
     executors::{
         fuzz::{CaseOutcome, CounterExampleOutcome, FuzzOutcome, FuzzedExecutor},
         invariant::{replay_run, InvariantExecutor, InvariantFuzzError, InvariantFuzzTestResult},
-        EvmError, ExecutionErr, Executor, RawCallResult,
+        CallResult, EvmError, ExecutionErr, Executor, RawCallResult,
     },
-    fuzz::{invariant::InvariantContract, CounterExample},
+    fuzz::{fixture_name, invariant::InvariantContract, CounterExample, FuzzFixtures},
     traces::{load_contracts, TraceKind},
 };
 use proptest::test_runner::TestRunner;
@@ -30,6 +31,7 @@ use rayon::prelude::*;
 use std::{
     borrow::Cow,
     collections::{BTreeMap, HashMap},
+    sync::Arc,
     time::Instant,
 };
 
@@ -37,14 +39,10 @@ use std::{
 #[derive(Clone, Debug)]
 pub struct ContractRunner<'a> {
     pub name: &'a str,
+    /// The data of the contract being ran.
+    pub contract: &'a TestContract,
     /// The executor used by the runner.
     pub executor: Executor,
-    /// Library contracts to be deployed before the test contract
-    pub predeploy_libs: &'a [Bytes],
-    /// The deployed contract's code
-    pub code: &'a Bytes,
-    /// The test contract's ABI
-    pub contract: &'a JsonAbi,
     /// Revert decoder. Contains all known errors.
     pub revert_decoder: &'a RevertDecoder,
     /// The initial balance of the test contract
@@ -56,27 +54,22 @@ pub struct ContractRunner<'a> {
 }
 
 impl<'a> ContractRunner<'a> {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: &'a str,
         executor: Executor,
-        contract: &'a JsonAbi,
-        code: &'a Bytes,
+        contract: &'a TestContract,
         initial_balance: U256,
         sender: Option<Address>,
         revert_decoder: &'a RevertDecoder,
-        predeploy_libs: &'a [Bytes],
         debug: bool,
     ) -> Self {
         Self {
             name,
             executor,
             contract,
-            code,
             initial_balance,
             sender: sender.unwrap_or_default(),
             revert_decoder,
-            predeploy_libs,
             debug,
         }
     }
@@ -104,8 +97,8 @@ impl<'a> ContractRunner<'a> {
 
         // Deploy libraries
         let mut logs = Vec::new();
-        let mut traces = Vec::with_capacity(self.predeploy_libs.len());
-        for code in self.predeploy_libs.iter() {
+        let mut traces = Vec::with_capacity(self.contract.libs_to_deploy.len());
+        for code in self.contract.libs_to_deploy.iter() {
             match self.executor.deploy(
                 self.sender,
                 code.clone(),
@@ -131,7 +124,7 @@ impl<'a> ContractRunner<'a> {
         // Deploy the test contract
         match self.executor.deploy(
             self.sender,
-            self.code.clone(),
+            self.contract.bytecode.clone(),
             U256::ZERO,
             Some(self.revert_decoder),
         ) {
@@ -174,12 +167,82 @@ impl<'a> ContractRunner<'a> {
             traces.extend(setup_traces.map(|traces| (TraceKind::Setup, traces)));
             logs.extend(setup_logs);
 
-            TestSetup { address, logs, traces, labeled_addresses, reason, coverage }
+            TestSetup {
+                address,
+                logs,
+                traces,
+                labeled_addresses,
+                reason,
+                coverage,
+                fuzz_fixtures: self.fuzz_fixtures(address),
+            }
         } else {
-            TestSetup::success(address, logs, traces, Default::default(), None)
+            TestSetup::success(
+                address,
+                logs,
+                traces,
+                Default::default(),
+                None,
+                self.fuzz_fixtures(address),
+            )
         };
 
         Ok(setup)
+    }
+
+    /// Collect fixtures from test contract.
+    ///
+    /// Fixtures can be defined:
+    /// - as storage arrays in test contract, prefixed with `fixture`
+    /// - as functions prefixed with `fixture` and followed by parameter name to be
+    /// fuzzed
+    ///
+    /// Storage array fixtures:
+    /// `uint256[] public fixture_amount = [1, 2, 3];`
+    /// define an array of uint256 values to be used for fuzzing `amount` named parameter in scope
+    /// of the current test.
+    ///
+    /// Function fixtures:
+    /// `function fixture_owner() public returns (address[] memory){}`
+    /// returns an array of addresses to be used for fuzzing `owner` named parameter in scope of the
+    /// current test.
+    fn fuzz_fixtures(&mut self, address: Address) -> FuzzFixtures {
+        let mut fixtures = HashMap::new();
+        self.contract.abi.functions().filter(|func| func.is_fixture()).for_each(|func| {
+            if func.inputs.is_empty() {
+                // Read fixtures declared as functions.
+                if let Ok(CallResult { raw: _, decoded_result }) =
+                    self.executor.call(CALLER, address, func, &[], U256::ZERO, None)
+                {
+                    fixtures.insert(fixture_name(func.name.clone()), decoded_result);
+                }
+            } else {
+                // For reading fixtures from storage arrays we collect values by calling the
+                // function with incremented indexes until there's an error.
+                let mut vals = Vec::new();
+                let mut index = 0;
+                loop {
+                    if let Ok(CallResult { raw: _, decoded_result }) = self.executor.call(
+                        CALLER,
+                        address,
+                        func,
+                        &[DynSolValue::Uint(U256::from(index), 256)],
+                        U256::ZERO,
+                        None,
+                    ) {
+                        vals.push(decoded_result);
+                    } else {
+                        // No result returned for this index, we reached the end of storage
+                        // array or the function is not a valid fixture.
+                        break;
+                    }
+                    index += 1;
+                }
+                fixtures.insert(fixture_name(func.name.clone()), DynSolValue::Array(vals));
+            };
+        });
+
+        FuzzFixtures::new(fixtures)
     }
 
     /// Runs all tests for a contract whose names match the provided regular expression
@@ -187,14 +250,14 @@ impl<'a> ContractRunner<'a> {
         mut self,
         filter: &dyn TestFilter,
         test_options: &TestOptions,
-        known_contracts: Option<&ContractsByArtifact>,
+        known_contracts: Arc<ContractsByArtifact>,
     ) -> SuiteResult {
         info!("starting tests");
         let start = Instant::now();
         let mut warnings = Vec::new();
 
         let setup_fns: Vec<_> =
-            self.contract.functions().filter(|func| func.name.is_setup()).collect();
+            self.contract.abi.functions().filter(|func| func.name.is_setup()).collect();
 
         let needs_setup = setup_fns.len() == 1 && setup_fns[0].name == "setUp";
 
@@ -215,10 +278,12 @@ impl<'a> ContractRunner<'a> {
                 [("setUp()".to_string(), TestResult::fail("multiple setUp functions".to_string()))]
                     .into(),
                 warnings,
+                self.contract.libraries.clone(),
+                known_contracts,
             )
         }
 
-        let has_invariants = self.contract.functions().any(|func| func.is_invariant_test());
+        let has_invariants = self.contract.abi.functions().any(|func| func.is_invariant_test());
 
         // Invariant testing requires tracing to figure out what contracts were created.
         let tmp_tracing = self.executor.inspector.tracer.is_none() && has_invariants && needs_setup;
@@ -251,6 +316,8 @@ impl<'a> ContractRunner<'a> {
                 )]
                 .into(),
                 warnings,
+                self.contract.libraries.clone(),
+                known_contracts,
             )
         }
 
@@ -259,6 +326,7 @@ impl<'a> ContractRunner<'a> {
         let find_timer = Instant::now();
         let functions = self
             .contract
+            .abi
             .functions()
             .filter(|func| is_matching_test(func, filter))
             .collect::<Vec<_>>();
@@ -266,12 +334,12 @@ impl<'a> ContractRunner<'a> {
         debug!(
             "Found {} test functions out of {} in {:?}",
             functions.len(),
-            self.contract.functions().count(),
+            self.contract.abi.functions().count(),
             find_time,
         );
 
         let identified_contracts =
-            has_invariants.then(|| load_contracts(setup.traces.clone(), known_contracts));
+            has_invariants.then(|| load_contracts(setup.traces.clone(), &known_contracts));
         let test_results = functions
             .par_iter()
             .map(|&func| {
@@ -287,7 +355,7 @@ impl<'a> ContractRunner<'a> {
                         setup,
                         *invariant_config,
                         func,
-                        known_contracts,
+                        &known_contracts,
                         identified_contracts.as_ref().unwrap(),
                     )
                 } else if func.is_fuzz_test() {
@@ -305,7 +373,13 @@ impl<'a> ContractRunner<'a> {
             .collect::<BTreeMap<_, _>>();
 
         let duration = start.elapsed();
-        let suite_result = SuiteResult::new(duration, test_results, warnings);
+        let suite_result = SuiteResult::new(
+            duration,
+            test_results,
+            warnings,
+            self.contract.libraries.clone(),
+            known_contracts,
+        );
         info!(
             duration=?suite_result.duration,
             "done. {}/{} successful",
@@ -339,82 +413,63 @@ impl<'a> ContractRunner<'a> {
 
         // Run unit test
         let mut executor = self.executor.clone();
-        let start = Instant::now();
-        let debug_arena;
-        let (reverted, reason, gas, stipend, coverage, state_changeset, breakpoints) =
-            match executor.execute_test(
-                self.sender,
-                address,
-                func,
-                &[],
-                U256::ZERO,
-                Some(self.revert_decoder),
-            ) {
-                Ok(res) => {
-                    let RawCallResult {
-                        reverted,
-                        gas_used: gas,
-                        stipend,
-                        logs: execution_logs,
-                        traces: execution_trace,
-                        coverage: execution_coverage,
-                        labels: new_labels,
-                        state_changeset,
-                        debug,
-                        cheatcodes,
-                        ..
-                    } = res.raw;
+        let start: Instant = Instant::now();
+        let (raw_call_result, reason) = match executor.execute_test(
+            self.sender,
+            address,
+            func,
+            &[],
+            U256::ZERO,
+            Some(self.revert_decoder),
+        ) {
+            Ok(res) => (res.raw, None),
+            Err(EvmError::Execution(err)) => (err.raw, Some(err.reason)),
+            Err(EvmError::SkipError) => {
+                return TestResult {
+                    status: TestStatus::Skipped,
+                    reason: None,
+                    decoded_logs: decode_console_logs(&logs),
+                    traces,
+                    labeled_addresses,
+                    kind: TestKind::Standard(0),
+                    duration: start.elapsed(),
+                    ..Default::default()
+                }
+            }
+            Err(err) => {
+                return TestResult {
+                    status: TestStatus::Failure,
+                    reason: Some(err.to_string()),
+                    decoded_logs: decode_console_logs(&logs),
+                    traces,
+                    labeled_addresses,
+                    kind: TestKind::Standard(0),
+                    duration: start.elapsed(),
+                    ..Default::default()
+                }
+            }
+        };
 
-                    let breakpoints = cheatcodes.map(|c| c.breakpoints).unwrap_or_default();
-                    traces.extend(execution_trace.map(|traces| (TraceKind::Execution, traces)));
-                    labeled_addresses.extend(new_labels);
-                    logs.extend(execution_logs);
-                    debug_arena = debug;
-                    coverage = merge_coverages(coverage, execution_coverage);
+        let RawCallResult {
+            reverted,
+            gas_used: gas,
+            stipend,
+            logs: execution_logs,
+            traces: execution_trace,
+            coverage: execution_coverage,
+            labels: new_labels,
+            state_changeset,
+            debug,
+            cheatcodes,
+            ..
+        } = raw_call_result;
 
-                    (reverted, None, gas, stipend, coverage, state_changeset, breakpoints)
-                }
-                Err(EvmError::Execution(err)) => {
-                    let ExecutionErr { raw, reason } = *err;
-                    traces.extend(raw.traces.map(|traces| (TraceKind::Execution, traces)));
-                    labeled_addresses.extend(raw.labels);
-                    logs.extend(raw.logs);
-                    debug_arena = raw.debug;
-                    (
-                        raw.reverted,
-                        Some(reason),
-                        raw.gas_used,
-                        raw.stipend,
-                        None,
-                        raw.state_changeset,
-                        Default::default(),
-                    )
-                }
-                Err(EvmError::SkipError) => {
-                    return TestResult {
-                        status: TestStatus::Skipped,
-                        reason: None,
-                        decoded_logs: decode_console_logs(&logs),
-                        traces,
-                        labeled_addresses,
-                        kind: TestKind::Standard(0),
-                        duration: start.elapsed(),
-                        ..Default::default()
-                    }
-                }
-                Err(err) => {
-                    return TestResult {
-                        status: TestStatus::Failure,
-                        reason: Some(err.to_string()),
-                        decoded_logs: decode_console_logs(&logs),
-                        traces,
-                        labeled_addresses,
-                        kind: TestKind::Standard(0),
-                        duration: start.elapsed(),
-                        ..Default::default()
-                    }
-                }
-            };
+        let breakpoints = cheatcodes.map(|c| c.breakpoints).unwrap_or_default();
+        let debug_arena = debug;
+        traces.extend(execution_trace.map(|traces| (TraceKind::Execution, traces)));
+        labeled_addresses.extend(new_labels);
+        logs.extend(execution_logs);
+        coverage = merge_coverages(coverage, execution_coverage);
 
         let success = executor.is_success(
             setup.address,
@@ -454,13 +509,12 @@ impl<'a> ContractRunner<'a> {
         setup: TestSetup,
         invariant_config: InvariantConfig,
         func: &Function,
-        known_contracts: Option<&ContractsByArtifact>,
+        known_contracts: &ContractsByArtifact,
         identified_contracts: &ContractsByAddress,
     ) -> TestResult {
         trace!(target: "forge::test::fuzz", "executing invariant test for {:?}", func.name);
-        let empty = ContractsByArtifact::default();
-        let project_contracts = known_contracts.unwrap_or(&empty);
-        let TestSetup { address, logs, traces, labeled_addresses, coverage, .. } = setup;
+        let TestSetup { address, logs, traces, labeled_addresses, coverage, fuzz_fixtures, .. } =
+            setup;
 
         // First, run the test normally to see if it needs to be skipped.
         let start = Instant::now();
@@ -490,14 +544,14 @@ impl<'a> ContractRunner<'a> {
             runner,
             invariant_config,
             identified_contracts,
-            project_contracts,
+            known_contracts,
         );
 
         let invariant_contract =
-            InvariantContract { address, invariant_function: func, abi: self.contract };
+            InvariantContract { address, invariant_function: func, abi: &self.contract.abi };
 
         let InvariantFuzzTestResult { error, cases, reverts, last_run_inputs, gas_report_traces } =
-            match evm.invariant_fuzz(invariant_contract.clone()) {
+            match evm.invariant_fuzz(invariant_contract.clone(), &fuzz_fixtures) {
                 Ok(x) => x,
                 Err(e) => {
                     return TestResult {
@@ -605,7 +659,13 @@ impl<'a> ContractRunner<'a> {
         let _guard = span.enter();
 
         let TestSetup {
-            address, mut logs, mut traces, mut labeled_addresses, mut coverage, ..
+            address,
+            mut logs,
+            mut traces,
+            mut labeled_addresses,
+            mut coverage,
+            fuzz_fixtures,
+            ..
         } = setup;
 
         // Run fuzz test
@@ -616,8 +676,8 @@ impl<'a> ContractRunner<'a> {
             self.sender,
             fuzz_config.clone(),
         );
-        let state = fuzzed_executor.build_fuzz_state();
-        let result = fuzzed_executor.fuzz(func, address, should_fail, self.revert_decoder);
+        let result =
+            fuzzed_executor.fuzz(func, &fuzz_fixtures, address, should_fail, self.revert_decoder);
 
         let mut debug = Default::default();
         let mut breakpoints = Default::default();
@@ -655,13 +715,12 @@ impl<'a> ContractRunner<'a> {
                 result.first_case.calldata.clone()
             };
             // rerun the last relevant test with traces
-            let debug_result = FuzzedExecutor::new(
-                debug_executor,
-                runner,
-                self.sender,
-                fuzz_config,
-            )
-            .single_fuzz(&state, address, should_fail, calldata);
+            let debug_result =
+                FuzzedExecutor::new(debug_executor, runner, self.sender, fuzz_config).single_fuzz(
+                    address,
+                    should_fail,
+                    calldata,
+                );
 
             (debug, breakpoints) = match debug_result {
                 Ok(fuzz_outcome) => match fuzz_outcome {

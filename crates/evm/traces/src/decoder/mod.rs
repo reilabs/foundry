@@ -56,8 +56,8 @@ impl CallTraceDecoderBuilder {
     #[inline]
     pub fn with_known_contracts(mut self, contracts: &ContractsByArtifact) -> Self {
         trace!(target: "evm::traces", len=contracts.len(), "collecting known contract ABIs");
-        for (abi, _) in contracts.values() {
-            self.decoder.collect_abi(abi, None);
+        for contract in contracts.values() {
+            self.decoder.collect_abi(&contract.abi, None);
         }
         self
     }
@@ -441,6 +441,7 @@ impl CallTraceDecoder {
             "keyExistsJson" |
             "serializeBool" |
             "serializeUint" |
+            "serializeUintToHex" |
             "serializeInt" |
             "serializeAddress" |
             "serializeBytes32" |
@@ -520,6 +521,7 @@ impl CallTraceDecoder {
         match func.name.as_str() {
             s if s.starts_with("env") => Some("<env var value>"),
             "createWallet" | "deriveKey" => Some("<pk>"),
+            "promptSecret" => Some("<secret>"),
             "parseJson" if self.verbosity < 5 => Some("<encoded JSON value>"),
             "readFile" if self.verbosity < 5 => Some("<file>"),
             _ => None,

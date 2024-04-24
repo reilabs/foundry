@@ -40,8 +40,37 @@ pub struct TUI<'a> {
 
 impl<'a> TUI<'a> {
     /// Creates a new debugger.
-    pub fn new(debugger_context: &'a mut DebuggerContext) -> Self {
-        Self { debugger_context }
+    pub fn new(
+        debug_arena: Vec<DebugNodeFlat>,
+        identified_contracts: HashMap<Address, String>,
+        contracts_sources: ContractSources,
+        breakpoints: Breakpoints,
+    ) -> Self {
+        let pc_ic_maps = contracts_sources
+            .entries()
+            .filter_map(|(contract_name, _, contract)| {
+                Some((
+                    contract_name.to_owned(),
+                    (
+                        PcIcMap::new(SpecId::LATEST, contract.bytecode.bytes()?),
+                        PcIcMap::new(SpecId::LATEST, contract.deployed_bytecode.bytes()?),
+                    ),
+                ))
+            })
+            .collect();
+        Self { debug_arena, identified_contracts, contracts_sources, pc_ic_maps, breakpoints }
+    }
+
+    /// Starts the debugger TUI. Terminates the current process on failure or user exit.
+    pub fn run_exit(mut self) -> ! {
+        let code = match self.try_run() {
+            Ok(ExitReason::CharExit) => 0,
+            Err(e) => {
+                println!("{e}");
+                1
+            }
+        };
+        std::process::exit(code)
     }
 
     /// Starts the debugger TUI.
@@ -65,16 +94,13 @@ impl<'a> TUI<'a> {
             .spawn(move || Self::event_listener(tx))
             .expect("failed to spawn thread");
 
-        // Draw the initial state.
-        cx.draw(terminal)?;
-
         // Start the event loop.
         loop {
+            cx.draw(terminal)?;
             match cx.handle_event(rx.recv()?) {
                 ControlFlow::Continue(()) => {}
                 ControlFlow::Break(reason) => return Ok(reason),
             }
-            cx.draw(terminal)?;
         }
     }
 

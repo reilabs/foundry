@@ -6,6 +6,7 @@ use crate::{
         RevertSnapshotAction,
     },
     fork::{CreateFork, ForkId},
+    InspectorExt,
 };
 use alloy_genesis::GenesisAccount;
 use alloy_primitives::{Address, B256, U256};
@@ -16,9 +17,9 @@ use revm::{
         Account, AccountInfo, Bytecode, Env, EnvWithHandlerCfg, HashMap as Map, ResultAndState,
         SpecId,
     },
-    Database, DatabaseCommit, Inspector, JournaledState,
+    Database, DatabaseCommit, JournaledState,
 };
-use std::{borrow::Cow, collections::HashMap};
+use std::{borrow::Cow, collections::BTreeMap};
 
 /// A wrapper around `Backend` that ensures only `revm::DatabaseRef` functions are called.
 ///
@@ -58,7 +59,7 @@ impl<'a> CowBackend<'a> {
     ///
     /// Note: in case there are any cheatcodes executed that modify the environment, this will
     /// update the given `env` with the new values.
-    pub fn inspect<'b, I: Inspector<&'b mut Self>>(
+    pub fn inspect<'b, I: InspectorExt<&'b mut Self>>(
         &'b mut self,
         env: &mut EnvWithHandlerCfg,
         inspector: I,
@@ -159,7 +160,7 @@ impl<'a> DatabaseExt for CowBackend<'a> {
     fn roll_fork(
         &mut self,
         id: Option<LocalForkId>,
-        block_number: U256,
+        block_number: u64,
         env: &mut Env,
         journaled_state: &mut JournaledState,
     ) -> eyre::Result<()> {
@@ -176,7 +177,7 @@ impl<'a> DatabaseExt for CowBackend<'a> {
         self.backend_mut(env).roll_fork_to_transaction(id, transaction, env, journaled_state)
     }
 
-    fn transact<I: Inspector<Backend>>(
+    fn transact<I: InspectorExt<Backend>>(
         &mut self,
         id: Option<LocalForkId>,
         transaction: B256,
@@ -213,7 +214,7 @@ impl<'a> DatabaseExt for CowBackend<'a> {
 
     fn load_allocs(
         &mut self,
-        allocs: &HashMap<Address, GenesisAccount>,
+        allocs: &BTreeMap<Address, GenesisAccount>,
         journaled_state: &mut JournaledState,
     ) -> Result<(), DatabaseError> {
         self.backend_mut(&Env::default()).load_allocs(allocs, journaled_state)

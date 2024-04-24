@@ -5,7 +5,6 @@ use foundry_common::{cli_warn, fs, TestFunctionExt};
 use foundry_compilers::{
     artifacts::{CompactBytecode, CompactDeployedBytecode},
     cache::{CacheEntry, SolFilesCache},
-    info::ContractInfo,
     utils::read_json_file,
     Artifact, ProjectCompileOutput,
 };
@@ -29,16 +28,17 @@ use yansi::Paint;
 #[track_caller]
 pub fn remove_contract(
     output: &mut ProjectCompileOutput,
-    info: &ContractInfo,
+    path: &Path,
+    name: &str,
 ) -> Result<(JsonAbi, CompactBytecode, CompactDeployedBytecode)> {
-    let contract = if let Some(contract) = output.remove_contract(info) {
+    let contract = if let Some(contract) = output.remove(path.to_string_lossy(), name) {
         contract
     } else {
-        let mut err = format!("could not find artifact: `{}`", info.name);
+        let mut err = format!("could not find artifact: `{}`", name);
         if let Some(suggestion) =
-            super::did_you_mean(&info.name, output.artifacts().map(|(name, _)| name)).pop()
+            super::did_you_mean(name, output.artifacts().map(|(name, _)| name)).pop()
         {
-            if suggestion != info.name {
+            if suggestion != name {
                 err = format!(
                     r#"{err}
 
@@ -51,17 +51,17 @@ pub fn remove_contract(
 
     let abi = contract
         .get_abi()
-        .ok_or_else(|| eyre::eyre!("contract {} does not contain abi", info))?
+        .ok_or_else(|| eyre::eyre!("contract {} does not contain abi", name))?
         .into_owned();
 
     let bin = contract
         .get_bytecode()
-        .ok_or_else(|| eyre::eyre!("contract {} does not contain bytecode", info))?
+        .ok_or_else(|| eyre::eyre!("contract {} does not contain bytecode", name))?
         .into_owned();
 
     let runtime = contract
         .get_deployed_bytecode()
-        .ok_or_else(|| eyre::eyre!("contract {} does not contain deployed bytecode", info))?
+        .ok_or_else(|| eyre::eyre!("contract {} does not contain deployed bytecode", name))?
         .into_owned();
 
     Ok((abi, bin, runtime))
@@ -139,7 +139,7 @@ pub fn needs_setup(abi: &JsonAbi) -> bool {
         if setup_fn.name != "setUp" {
             println!(
                 "{} Found invalid setup function \"{}\" did you mean \"setUp()\"?",
-                Paint::yellow("Warning:").bold(),
+                "Warning:".yellow().bold(),
                 setup_fn.signature()
             );
         }
@@ -448,9 +448,9 @@ pub async fn print_traces(result: &mut TraceResult, decoder: &CallTraceDecoder) 
     println!();
 
     if result.success {
-        println!("{}", Paint::green("Transaction successfully executed."));
+        println!("{}", "Transaction successfully executed.".green());
     } else {
-        println!("{}", Paint::red("Transaction failed."));
+        println!("{}", "Transaction failed.".red());
     }
 
     println!("Gas used: {}", result.gas_used);

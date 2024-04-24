@@ -5,7 +5,7 @@ use crate::{
 };
 use alloy_genesis::Genesis;
 use alloy_primitives::{utils::Unit, U256};
-use alloy_signer::coins_bip39::{English, Mnemonic};
+use alloy_signer_wallet::coins_bip39::{English, Mnemonic};
 use anvil_server::ServerConfig;
 use clap::Parser;
 use core::fmt;
@@ -194,9 +194,9 @@ impl NodeArgs {
         };
 
         NodeConfig::default()
-            .with_gas_limit(self.evm_opts.gas_limit.map(U256::from))
+            .with_gas_limit(self.evm_opts.gas_limit)
             .disable_block_gas_limit(self.evm_opts.disable_block_gas_limit)
-            .with_gas_price(self.evm_opts.gas_price.map(U256::from))
+            .with_gas_price(self.evm_opts.gas_price)
             .with_hardfork(self.hardfork)
             .with_blocktime(self.block_time)
             .with_no_mining(self.no_mining)
@@ -216,7 +216,7 @@ impl NodeArgs {
             .fork_retry_backoff(self.evm_opts.fork_retry_backoff.map(Duration::from_millis))
             .fork_compute_units_per_second(compute_units_per_second)
             .with_eth_rpc_url(self.evm_opts.fork_url.map(|fork| fork.url))
-            .with_base_fee(self.evm_opts.block_base_fee_per_gas.map(U256::from))
+            .with_base_fee(self.evm_opts.block_base_fee_per_gas)
             .with_storage_caching(self.evm_opts.no_storage_caching)
             .with_server_config(self.server_config)
             .with_host(self.host)
@@ -235,6 +235,7 @@ impl NodeArgs {
             .with_optimism(self.evm_opts.optimism)
             .with_disable_default_create2_deployer(self.evm_opts.disable_default_create2_deployer)
             .with_slots_in_an_epoch(self.slots_in_an_epoch)
+            .with_memory_limit(self.evm_opts.memory_limit)
     }
 
     fn account_generator(&self) -> AccountGenerator {
@@ -274,7 +275,7 @@ impl NodeArgs {
         let dump_interval =
             self.state_interval.map(Duration::from_secs).unwrap_or(DEFAULT_DUMP_INTERVAL);
 
-        let (api, mut handle) = crate::spawn(self.into_node_config()).await;
+        let (api, mut handle) = crate::try_spawn(self.into_node_config()).await?;
 
         // sets the signal handler to gracefully shutdown.
         let mut fork = api.get_fork();
@@ -454,7 +455,7 @@ pub struct AnvilEvmArgs {
 
     /// The block gas limit.
     #[arg(long, alias = "block-gas-limit", help_heading = "Environment config")]
-    pub gas_limit: Option<u64>,
+    pub gas_limit: Option<u128>,
 
     /// Disable the `call.gas_limit <= block.gas_limit` constraint.
     #[arg(
@@ -473,7 +474,7 @@ pub struct AnvilEvmArgs {
 
     /// The gas price.
     #[arg(long, help_heading = "Environment config")]
-    pub gas_price: Option<u64>,
+    pub gas_price: Option<u128>,
 
     /// The base fee in a block.
     #[arg(
@@ -482,7 +483,7 @@ pub struct AnvilEvmArgs {
         value_name = "FEE",
         help_heading = "Environment config"
     )]
-    pub block_base_fee_per_gas: Option<u64>,
+    pub block_base_fee_per_gas: Option<u128>,
 
     /// The chain ID.
     #[arg(long, alias = "chain", help_heading = "Environment config")]
@@ -503,6 +504,10 @@ pub struct AnvilEvmArgs {
     /// Disable the default create2 deployer
     #[arg(long, visible_alias = "no-create2")]
     pub disable_default_create2_deployer: bool,
+
+    /// The memory limit per EVM execution in bytes.
+    #[arg(long)]
+    pub memory_limit: Option<u64>,
 }
 
 /// Resolves an alias passed as fork-url to the matching url defined in the rpc_endpoints section

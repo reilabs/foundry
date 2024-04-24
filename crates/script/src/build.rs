@@ -7,37 +7,39 @@ use crate::{
 };
 
 use alloy_primitives::{Address, Bytes};
-use ethers_providers::Middleware;
-use eyre::{Context, OptionExt, Result};
+use alloy_provider::Provider;
+use eyre::{OptionExt, Result};
 use foundry_cheatcodes::ScriptWallets;
 use foundry_cli::utils::{get_cached_entry_by_name, get_output_artifact};
 use foundry_common::{
-    compile::{self, ContractSources, ProjectCompiler},
-    provider::ethers::try_get_http_provider,
-    types::ToAlloy,
-    ContractsByArtifact,
+    compile::{ContractSources, ProjectCompiler},
+    provider::alloy::try_get_http_provider,
+    ContractData, ContractsByArtifact,
 };
 use foundry_compilers::{
-    artifacts::{BytecodeObject, ContractBytecode, ContractBytecodeSome, Libraries},
-    cache::SolFilesCache,
-    contracts::ArtifactContracts,
+    artifacts::{BytecodeObject, Libraries},
     info::ContractInfo,
-    ArtifactId,
+    utils::source_files_iter,
+    ArtifactId, ProjectCompileOutput,
 };
 use foundry_linking::{LinkOutput, Linker};
-use std::{str::FromStr, sync::Arc};
+use std::{path::PathBuf, str::FromStr, sync::Arc};
 
 /// Container for the compiled contracts.
 pub struct BuildData {
+    /// Root of the project
+    pub project_root: PathBuf,
     /// Linker which can be used to link contracts, owns [ArtifactContracts] map.
-    pub linker: Linker,
+    pub output: ProjectCompileOutput,
     /// Id of target contract artifact.
     pub target: ArtifactId,
-    /// Source files of the contracts. Used by debugger.
-    pub sources: ContractSources,
 }
 
 impl BuildData {
+    pub fn get_linker(&self) -> Linker {
+        Linker::new(self.project_root.clone(), self.output.artifact_ids().collect())
+    }
+
     /// Links the build data with given libraries, using sender and nonce to compute addresses of
     /// missing libraries.
     pub fn link(
@@ -46,8 +48,12 @@ impl BuildData {
         sender: Address,
         nonce: u64,
     ) -> Result<LinkedBuildData> {
-        let link_output =
-            self.linker.link_with_nonce_or_address(known_libraries, sender, nonce, &self.target)?;
+        let link_output = self.get_linker().link_with_nonce_or_address(
+            known_libraries,
+            sender,
+            nonce,
+            &self.target,
+        )?;
 
         LinkedBuildData::new(link_output, self)
     }
@@ -55,8 +61,12 @@ impl BuildData {
     /// Links the build data with the given libraries. Expects supplied libraries set being enough
     /// to fully link target contract.
     pub fn link_with_libraries(self, libraries: Libraries) -> Result<LinkedBuildData> {
-        let link_output =
-            self.linker.link_with_nonce_or_address(libraries, Address::ZERO, 0, &self.target)?;
+        let link_output = self.get_linker().link_with_nonce_or_address(
+            libraries,
+            Address::ZERO,
+            0,
+            &self.target,
+        )?;
 
         if !link_output.libs_to_deploy.is_empty() {
             eyre::bail!("incomplete libraries set");
@@ -71,55 +81,39 @@ pub struct LinkedBuildData {
     /// Original build data, might be used to relink this object with different libraries.
     pub build_data: BuildData,
     /// Known fully linked contracts.
-    pub highlevel_known_contracts: ArtifactContracts<ContractBytecodeSome>,
+    pub known_contracts: ContractsByArtifact,
     /// Libraries used to link the contracts.
     pub libraries: Libraries,
     /// Libraries that need to be deployed by sender before script execution.
     pub predeploy_libraries: Vec<Bytes>,
+    /// Source files of the contracts. Used by debugger.
+    pub sources: ContractSources,
 }
 
 impl LinkedBuildData {
     pub fn new(link_output: LinkOutput, build_data: BuildData) -> Result<Self> {
-        let highlevel_known_contracts = build_data
-            .linker
-            .get_linked_artifacts(&link_output.libraries)?
-            .iter()
-            .filter_map(|(id, contract)| {
-                ContractBytecodeSome::try_from(ContractBytecode::from(contract.clone()))
-                    .ok()
-                    .map(|tc| (id.clone(), tc))
-            })
-            .filter(|(_, tc)| tc.bytecode.object.is_non_empty_bytecode())
-            .collect();
+        let sources = ContractSources::from_project_output(
+            &build_data.output,
+            &build_data.project_root,
+            &link_output.libraries,
+        )?;
+
+        let known_contracts = ContractsByArtifact::new(
+            build_data.get_linker().get_linked_artifacts(&link_output.libraries)?,
+        );
 
         Ok(Self {
             build_data,
-            highlevel_known_contracts,
+            known_contracts,
             libraries: link_output.libraries,
             predeploy_libraries: link_output.libs_to_deploy,
+            sources,
         })
     }
 
-    /// Flattens the contracts into  (`id` -> (`JsonAbi`, `Vec<u8>`)) pairs
-    pub fn get_flattened_contracts(&self, deployed_code: bool) -> ContractsByArtifact {
-        ContractsByArtifact(
-            self.highlevel_known_contracts
-                .iter()
-                .filter_map(|(id, c)| {
-                    let bytecode = if deployed_code {
-                        c.deployed_bytecode.bytes()
-                    } else {
-                        c.bytecode.bytes()
-                    };
-                    bytecode.cloned().map(|code| (id.clone(), (c.abi.clone(), code.into())))
-                })
-                .collect(),
-        )
-    }
-
     /// Fetches target bytecode from linked contracts.
-    pub fn get_target_contract(&self) -> Result<ContractBytecodeSome> {
-        self.highlevel_known_contracts
+    pub fn get_target_contract(&self) -> Result<ContractData> {
+        self.known_contracts
             .get(&self.build_data.target)
             .cloned()
             .ok_or_eyre("target not found in linked artifacts")
@@ -139,7 +133,6 @@ impl PreprocessedState {
     pub fn compile(self) -> Result<CompiledState> {
         let Self { args, script_config, script_wallets } = self;
         let project = script_config.config.project()?;
-        let filters = args.skip.clone().unwrap_or_default();
 
         let mut target_name = args.target_contract.clone();
 
@@ -147,14 +140,14 @@ impl PreprocessedState {
         // Otherwise, parse input as <path>:<name> and use the path from the contract info, if
         // present.
         let target_path = if let Ok(path) = dunce::canonicalize(&args.path) {
-            Some(path)
+            path
         } else {
             let contract = ContractInfo::from_str(&args.path)?;
             target_name = Some(contract.name.clone());
             if let Some(path) = contract.path {
-                Some(dunce::canonicalize(path)?)
+                dunce::canonicalize(path)?
             } else {
-                None
+                project.find_contract_path(contract.name.as_str())?
             }
         };
 
@@ -191,7 +184,10 @@ impl PreprocessedState {
             output_artifact
         };
 
-        let target_path = project.root().join(target_path);
+        let output = ProjectCompiler::new()
+            .quiet_if(args.opts.silent)
+            .files(sources_to_compile)
+            .compile(&project)?;
 
         let mut target_id: Option<ArtifactId> = None;
 
@@ -225,16 +221,13 @@ impl PreprocessedState {
             target_id = Some(id);
         }
 
-        let sources = ContractSources::from_project_output(&output, project.root())?;
-        let contracts = output.into_artifacts().collect();
         let target = target_id.ok_or_eyre("Could not find target contract")?;
-        let linker = Linker::new(project.root(), contracts);
 
         Ok(CompiledState {
             args,
             script_config,
             script_wallets,
-            build_data: BuildData { linker, target, sources },
+            build_data: BuildData { output, target, project_root: project.root().clone() },
         })
     }
 }
@@ -267,7 +260,7 @@ impl CompiledState {
         } else {
             let fork_url = self.script_config.evm_opts.fork_url.clone().ok_or_eyre("Missing --fork-url field, if you were trying to broadcast a multi-chain sequence, please use --multi flag")?;
             let provider = Arc::new(try_get_http_provider(fork_url)?);
-            Some(provider.get_chainid().await?.as_u64())
+            Some(provider.get_chain_id().await?)
         };
 
         let sequence = match self.try_load_sequence(chain, false) {
@@ -295,7 +288,7 @@ impl CompiledState {
                 s.transactions
                     .iter()
                     .skip(s.receipts.len())
-                    .map(|t| t.transaction.from().expect("from is missing in script artifact"))
+                    .map(|t| t.transaction.from.expect("from is missing in script artifact"))
             });
 
             let available_signers = self
@@ -303,7 +296,7 @@ impl CompiledState {
                 .signers()
                 .map_err(|e| eyre::eyre!("Failed to get available signers: {}", e))?;
 
-            if !froms.all(|from| available_signers.contains(&from.to_alloy())) {
+            if !froms.all(|from| available_signers.contains(&from)) {
                 // IF we are missing required signers, execute script as we might need to collect
                 // private keys from the execution.
                 let executed = self.link()?.prepare_execution().await?.execute().await?;

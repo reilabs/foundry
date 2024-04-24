@@ -2,7 +2,7 @@
 
 use alloy_primitives::{Address, B256, U256};
 use foundry_cli::utils as forge_utils;
-use foundry_compilers::artifacts::{OptimizerDetails, RevertStrings, YulDetails};
+use foundry_compilers::artifacts::{BytecodeHash, OptimizerDetails, RevertStrings, YulDetails};
 use foundry_config::{
     cache::{CachedChains, CachedEndpoints, StorageCachingConfig},
     fs_permissions::{FsAccessPermission, PathPermission},
@@ -72,6 +72,7 @@ forgetest!(can_extract_config_values, |prj, cmd| {
         invariant: InvariantConfig { runs: 256, ..Default::default() },
         ffi: true,
         always_use_create_2_factory: false,
+        prompt_timeout: 0,
         sender: "00a329c0648769A73afAc7F9381D08FB43dBEA72".parse().unwrap(),
         tx_origin: "00a329c0648769A73afAc7F9F81E08FB43dBEA72".parse().unwrap(),
         initial_balance: U256::from(0xffffffffffffffffffffffffu128),
@@ -125,6 +126,7 @@ forgetest!(can_extract_config_values, |prj, cmd| {
         labels: Default::default(),
         cancun: true,
         isolate: true,
+        unchecked_cheatcode_artifacts: false,
         __non_exhaustive: (),
         __warnings: vec![],
     };
@@ -303,8 +305,10 @@ forgetest_init!(can_get_evm_opts, |prj, _cmd| {
 
 // checks that we can set various config values
 forgetest_init!(can_set_config_values, |prj, _cmd| {
-    let config = prj.config_from_output(["--via-ir"]);
+    let config = prj.config_from_output(["--via-ir", "--no-metadata"]);
     assert!(config.via_ir);
+    assert_eq!(config.cbor_metadata, false);
+    assert_eq!(config.bytecode_hash, BytecodeHash::None);
 });
 
 // tests that solc can be explicitly set
