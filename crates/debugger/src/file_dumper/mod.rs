@@ -137,7 +137,7 @@ fn to_step_dump(step: DebugStep) -> StepDump {
         memory: step.memory,
         calldata: step.calldata,
         returndata: step.returndata,
-        instruction: step.instruction,
+        instruction: foundry_evm_core::debug::Instruction::OpCode(step.instruction),
         push_bytes: Bytes::from(step.push_bytes.to_vec()),
         pc: step.pc,
         total_gas_used: step.total_gas_used,

@@ -5,11 +5,12 @@ use comfy_table::{presets::ASCII_MARKDOWN, Attribute, Cell, CellAlignment, Color
 use eyre::{Context, Result};
 use foundry_block_explorers::contract::Metadata;
 use foundry_compilers::{
-    artifacts::{BytecodeObject, ContractBytecodeSome, Libraries},
+    artifacts::{BytecodeObject, ContractBytecodeSome, CompactContractBytecode, Libraries},
     remappings::Remapping,
     report::{BasicStdoutReporter, NoReporter, Report},
     Artifact, ArtifactId, FileFilter, Project, ProjectCompileOutput, ProjectPathsConfig, Solc,
     SolcConfig,
+    Graph
 };
 use foundry_linking::Linker;
 use num_format::{Locale, ToFormattedString};
@@ -373,21 +374,6 @@ impl ContractSources {
             })
         })
     }
-
-    /// Returns all (name, source, bytecode) sets.
-    pub fn entries(&self) -> impl Iterator<Item = (&str, &str, &ContractBytecodeSome)> {
-        self.artifacts_by_id
-            .iter()
-            .filter_map(|(id, artifacts)| {
-                let source = self.sources_by_id.get(id)?;
-                Some(
-                    artifacts
-                        .iter()
-                        .map(move |(name, bytecode)| (name.as_ref(), source.as_ref(), bytecode)),
-                )
-            })
-            .flatten()
-    }
 }
 
 // https://eips.ethereum.org/EIPS/eip-170
@@ -471,6 +457,36 @@ pub fn deployed_contract_size<T: Artifact>(artifact: &T) -> Option<usize> {
         }
     };
     Some(size)
+}
+
+/// Compiles target file path.
+///
+/// If `quiet` no solc related output will be emitted to stdout.
+///
+/// If `verify` and it's a standalone script, throw error. Only allowed for projects.
+///
+/// **Note:** this expects the `target_path` to be absolute
+pub fn compile_target_with_filter(
+    target_path: &Path,
+    project: &Project,
+    quiet: bool,
+    verify: bool,
+    skip: Vec<SkipBuildFilter>,
+) -> Result<ProjectCompileOutput> {
+    let graph = Graph::resolve(&project.paths)?;
+
+    // Checking if it's a standalone script, or part of a project.
+    let mut compiler = ProjectCompiler::new().quiet(quiet);
+    if !skip.is_empty() {
+        compiler = compiler.filter(Box::new(SkipBuildFilters::new(skip, target_path.to_path_buf())?));
+    }
+    if !graph.files().contains_key(target_path) {
+        if verify {
+            eyre::bail!("You can only verify deployments from inside a project! Make sure it exists with `forge tree`.");
+        }
+        compiler = compiler.files([target_path.into()]);
+    }
+    compiler.compile(project)
 }
 
 /// How big the contract is and whether it is a dev contract where size limits can be neglected

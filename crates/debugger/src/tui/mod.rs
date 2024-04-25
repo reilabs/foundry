@@ -5,7 +5,15 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use foundry_evm_core::debug::DebugNodeFlat;
+use std::collections::HashMap;
+use alloy_primitives::Address;
+use foundry_common::compile::ContractSources;
+use foundry_common::evm::Breakpoints;
+use foundry_evm_core::utils::PcIcMap;
 use eyre::Result;
+use std::collections::BTreeMap;
+use revm::primitives::SpecId;
 use ratatui::{
     backend::{Backend, CrosstermBackend},
     Terminal,
@@ -39,26 +47,26 @@ pub struct TUI<'a> {
 }
 
 impl<'a> TUI<'a> {
+    
     /// Creates a new debugger.
     pub fn new(
-        debug_arena: Vec<DebugNodeFlat>,
-        identified_contracts: HashMap<Address, String>,
-        contracts_sources: ContractSources,
-        breakpoints: Breakpoints,
+        debugger_context: &'a mut DebuggerContext
     ) -> Self {
-        let pc_ic_maps = contracts_sources
-            .entries()
-            .filter_map(|(contract_name, _, contract)| {
-                Some((
-                    contract_name.to_owned(),
-                    (
-                        PcIcMap::new(SpecId::LATEST, contract.bytecode.bytes()?),
-                        PcIcMap::new(SpecId::LATEST, contract.deployed_bytecode.bytes()?),
-                    ),
-                ))
-            })
-            .collect();
-        Self { debug_arena, identified_contracts, contracts_sources, pc_ic_maps, breakpoints }
+        // let pc_ic_maps = contracts_sources
+        //     .entries()
+        //     .filter_map(|(contract_name, (contract_name_a, contract, c))| {
+        //         Some((
+        //             contract_name.to_owned(),
+        //             (
+        //                 PcIcMap::new(SpecId::LATEST, contract.bytecode.bytes()?),
+        //                 PcIcMap::new(SpecId::LATEST, contract.deployed_bytecode.bytes()?),
+        //             ),
+        //         ))
+        //     })
+        //     .collect();
+        Self {
+            debugger_context: debugger_context
+        }
     }
 
     /// Starts the debugger TUI. Terminates the current process on failure or user exit.

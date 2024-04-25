@@ -114,7 +114,7 @@ impl<'a> TUIContext<'a> {
 
     fn gen_opcode_list(&mut self) {
         self.opcode_list.clear();
-        let debug_steps = &self.debugger.debug_arena[self.draw_memory.inner_call_index].steps;
+        let debug_steps = &self.debug_arena()[self.draw_memory.inner_call_index].steps.clone();
         self.opcode_list.extend(debug_steps.iter().map(DebugStep::pretty_opcode));
     }
 

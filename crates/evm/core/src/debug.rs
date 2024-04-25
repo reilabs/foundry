@@ -4,6 +4,7 @@ use arrayvec::ArrayVec;
 use revm::interpreter::OpCode;
 use revm_inspectors::tracing::types::CallKind;
 use serde::{Deserialize, Serialize};
+use std::fmt::Display;
 
 /// An arena of [DebugNode]s
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -218,6 +219,55 @@ impl DebugStep {
     /// Returns `true` if the opcode modifies memory.
     pub fn opcode_modifies_memory(&self) -> bool {
         OpCode::new(self.instruction).map_or(false, opcodes::modifies_memory)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Instruction {
+    OpCode(u8),
+    Cheatcode([u8; 4]),
+}
+
+impl From<u8> for Instruction {
+    fn from(op: u8) -> Instruction {
+        Instruction::OpCode(op)
+    }
+}
+
+impl Display for Instruction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Instruction::OpCode(op) => write!(
+                f,
+                "{}",
+                OpCode::new(*op).map_or_else(
+                    || format!("UNDEFINED(0x{op:02x})"),
+                    |opcode| opcode.as_str().to_string(),
+                )
+            ),
+            Instruction::Cheatcode(cheat) => write!(
+                f,
+                "VM_{}",
+                crate::abi::Vm::CHEATCODES
+                    .iter()
+                    .map(|c| &c.func)
+                    .find(|c| c.selector_bytes == *cheat)
+                    .expect("unknown cheatcode found in debugger")
+                    .id
+                    .to_uppercase()
+            ),
+        }
+    }
+}
+
+impl Instruction {
+    /// Returns the opcode of the instruction, if it is an opcode.
+    #[inline]
+    pub fn opcode(&self) -> Option<u8> {
+        match self {
+            Instruction::OpCode(op) => Some(*op),
+            _ => None,
+        }
     }
 }
 
