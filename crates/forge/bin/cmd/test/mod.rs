@@ -283,7 +283,7 @@ impl TestArgs {
 
         let config = Arc::new(config);
 
-        let runner = MultiContractRunnerBuilder::new(config.clone())
+        let runner = MultiContractRunnerBuilder::default()
             .set_debug(should_debug)
             .initial_balance(evm_opts.initial_balance)
             .evm_spec(config.evm_spec_id())
