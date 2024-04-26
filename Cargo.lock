@@ -3733,6 +3733,7 @@ dependencies = [
  "foundry-wallets",
  "futures",
  "indicatif",
+ "itertools 0.12.1",
  "once_cell",
  "regex",
  "serde",
@@ -3887,6 +3888,7 @@ dependencies = [
  "ratatui",
  "revm",
  "revm-inspectors",
+ "serde",
  "tracing",
 ]
 

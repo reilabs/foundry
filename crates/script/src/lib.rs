@@ -45,7 +45,11 @@ use foundry_evm::{
 };
 use foundry_wallets::MultiWalletOpts;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    path::PathBuf,
+    sync::Arc
+};
 use yansi::Paint;
 
 mod broadcast;
@@ -143,6 +147,14 @@ pub struct ScriptArgs {
     #[arg(long)]
     pub debug: bool,
 
+    /// Dumps all debugger steps to file.
+    #[arg(
+        long,
+        requires = "debug",
+        value_hint = ValueHint::FilePath,
+    )]
+    pub dump: Option<PathBuf>,
+
     /// Makes sure a transaction is sent,
     /// only after its previous one has been confirmed and succeeded.
     #[arg(long)]
@@ -238,7 +250,10 @@ impl ScriptArgs {
                 .await?;
 
             if pre_simulation.args.debug {
-                pre_simulation.run_debugger()?;
+                match pre_simulation.args.dump {
+                    Some(ref path) => pre_simulation.run_debug_file_dumper(path)?,
+                    None => pre_simulation.run_debugger()?,
+                }
             }
 
             if pre_simulation.args.json {

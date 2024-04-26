@@ -10,11 +10,14 @@ use alloy_primitives::{Address, Bytes};
 use alloy_provider::Provider;
 use eyre::{OptionExt, Result};
 use foundry_cheatcodes::ScriptWallets;
+use foundry_cli::utils::{get_cached_entry_by_name, get_output_artifact};
 use foundry_common::{
-    compile::{ContractSources, ProjectCompiler},
+    compile::{self, ContractSources, ProjectCompiler},
     provider::alloy::try_get_http_provider,
     ContractData, ContractsByArtifact,
 };
+use eyre::WrapErr;
+use foundry_compilers::cache::SolFilesCache;
 use foundry_compilers::{
     artifacts::{BytecodeObject, Libraries},
     info::ContractInfo,
@@ -132,6 +135,7 @@ impl PreprocessedState {
     pub fn compile(self) -> Result<CompiledState> {
         let Self { args, script_config, script_wallets } = self;
         let project = script_config.config.project()?;
+        let filters = args.skip.clone().unwrap_or_default();
 
         let mut target_name = args.target_contract.clone();
 
@@ -150,8 +154,41 @@ impl PreprocessedState {
             }
         };
 
+        // If we've found target path above, only compile it.
+        // Otherwise, compile everything to match contract by name later.
+        let output = if let target_path = target_path.clone() {
+            compile::compile_target_with_filter(
+                &target_path,
+                &project,
+                args.opts.silent,
+                args.verify,
+                filters,
+            )
+        } else if !project.paths.has_input_files() {
+            Err(eyre::eyre!("The project doesn't have any input files. Make sure the `script` directory is configured properly in foundry.toml. Otherwise, provide the path to the file."))
+        } else {
+            ProjectCompiler::new().compile(&project)
+        }?;
+
+        // If we still don't have target path, find it by name in the compilation cache.
+        let target_path = if let target_path = target_path {
+            target_path
+        } else if project.cached {
+            let target_name = target_name.clone().expect("was set above");
+            let cache = SolFilesCache::read_joined(&project.paths)
+                .wrap_err("Could not open compiler cache")?;
+            let (path, _) = get_cached_entry_by_name(&cache, &target_name)
+                .wrap_err("Could not find target contract in cache")?;
+            path
+        } else {
+            // We have no cache
+            let target_name = target_name.clone().expect("was set above");
+            let output_artifact = get_output_artifact(&target_name, &output).unwrap();
+            output_artifact
+        };
+
         let sources_to_compile =
-            source_files_iter(project.paths.sources.as_path()).chain([target_path.to_path_buf()]);
+        source_files_iter(project.paths.sources.as_path()).chain([target_path.to_path_buf()]);
 
         let output = ProjectCompiler::new()
             .quiet_if(args.opts.silent)
@@ -166,8 +203,8 @@ impl PreprocessedState {
                 if id.name != *name {
                     continue;
                 }
-            } else if contract.abi.as_ref().map_or(true, |abi| abi.is_empty()) ||
-                contract.bytecode.as_ref().map_or(true, |b| match &b.object {
+            } else if contract.abi.as_ref().map_or(true, |abi| abi.is_empty())
+                || contract.bytecode.as_ref().map_or(true, |b| match &b.object {
                     BytecodeObject::Bytecode(b) => b.is_empty(),
                     BytecodeObject::Unlinked(_) => false,
                 })

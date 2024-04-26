@@ -1,21 +1,24 @@
 //! The TUI implementation.
 
-use alloy_primitives::Address;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use foundry_evm_core::debug::DebugNodeFlat;
+use std::collections::HashMap;
+use alloy_primitives::Address;
+use foundry_common::compile::ContractSources;
+use foundry_common::evm::Breakpoints;
+use foundry_evm_core::utils::PcIcMap;
 use eyre::Result;
-use foundry_common::{compile::ContractSources, evm::Breakpoints};
-use foundry_evm_core::{debug::DebugNodeFlat, utils::PcIcMap};
+use std::collections::BTreeMap;
+use revm::primitives::SpecId;
 use ratatui::{
     backend::{Backend, CrosstermBackend},
     Terminal,
 };
-use revm::primitives::SpecId;
 use std::{
-    collections::{BTreeMap, HashMap},
     io,
     ops::ControlFlow,
     sync::{mpsc, Arc},
@@ -23,11 +26,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-mod builder;
-pub use builder::DebuggerBuilder;
-
 mod context;
-use context::DebuggerContext;
+use crate::context::DebuggerContext;
+use context::TUIContext;
 
 mod draw;
 
@@ -41,43 +42,31 @@ pub enum ExitReason {
 }
 
 /// The TUI debugger.
-pub struct Debugger {
-    debug_arena: Vec<DebugNodeFlat>,
-    identified_contracts: HashMap<Address, String>,
-    /// Source map of contract sources
-    contracts_sources: ContractSources,
-    /// A mapping of source -> (PC -> IC map for deploy code, PC -> IC map for runtime code)
-    pc_ic_maps: BTreeMap<String, (PcIcMap, PcIcMap)>,
-    breakpoints: Breakpoints,
+pub struct TUI<'a> {
+    debugger_context: &'a mut DebuggerContext,
 }
 
-impl Debugger {
-    /// Creates a new debugger builder.
-    #[inline]
-    pub fn builder() -> DebuggerBuilder {
-        DebuggerBuilder::new()
-    }
-
+impl<'a> TUI<'a> {
+    
     /// Creates a new debugger.
     pub fn new(
-        debug_arena: Vec<DebugNodeFlat>,
-        identified_contracts: HashMap<Address, String>,
-        contracts_sources: ContractSources,
-        breakpoints: Breakpoints,
+        debugger_context: &'a mut DebuggerContext
     ) -> Self {
-        let pc_ic_maps = contracts_sources
-            .entries()
-            .filter_map(|(contract_name, _, contract)| {
-                Some((
-                    contract_name.to_owned(),
-                    (
-                        PcIcMap::new(SpecId::LATEST, contract.bytecode.bytes()?),
-                        PcIcMap::new(SpecId::LATEST, contract.deployed_bytecode.bytes()?),
-                    ),
-                ))
-            })
-            .collect();
-        Self { debug_arena, identified_contracts, contracts_sources, pc_ic_maps, breakpoints }
+        // let pc_ic_maps = contracts_sources
+        //     .entries()
+        //     .filter_map(|(contract_name, (contract_name_a, contract, c))| {
+        //         Some((
+        //             contract_name.to_owned(),
+        //             (
+        //                 PcIcMap::new(SpecId::LATEST, contract.bytecode.bytes()?),
+        //                 PcIcMap::new(SpecId::LATEST, contract.deployed_bytecode.bytes()?),
+        //             ),
+        //         ))
+        //     })
+        //     .collect();
+        Self {
+            debugger_context: debugger_context
+        }
     }
 
     /// Starts the debugger TUI. Terminates the current process on failure or user exit.
@@ -94,8 +83,6 @@ impl Debugger {
 
     /// Starts the debugger TUI.
     pub fn try_run(&mut self) -> Result<ExitReason> {
-        eyre::ensure!(!self.debug_arena.is_empty(), "debug arena is empty");
-
         let backend = CrosstermBackend::new(io::stdout());
         let terminal = Terminal::new(backend)?;
         TerminalGuard::with(terminal, |terminal| self.try_run_real(terminal))
@@ -104,7 +91,7 @@ impl Debugger {
     #[instrument(target = "debugger", name = "run", skip_all, ret)]
     fn try_run_real(&mut self, terminal: &mut DebuggerTerminal) -> Result<ExitReason> {
         // Create the context.
-        let mut cx = DebuggerContext::new(self);
+        let mut cx = TUIContext::new(self.debugger_context);
 
         cx.init();
 

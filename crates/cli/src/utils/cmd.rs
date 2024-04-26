@@ -8,6 +8,7 @@ use foundry_compilers::{
     utils::read_json_file,
     Artifact, ProjectCompileOutput,
 };
+use std::path::Path;
 use foundry_config::{error::ExtractConfigError, figment::Figment, Chain, Config, NamedChain};
 use foundry_debugger::Debugger;
 use foundry_evm::{
@@ -19,11 +20,8 @@ use foundry_evm::{
         render_trace_arena, CallTraceDecoder, CallTraceDecoderBuilder, TraceKind, Traces,
     },
 };
-use std::{
-    fmt::Write,
-    path::{Path, PathBuf},
-    str::FromStr,
-};
+use itertools::Itertools;
+use std::{fmt::Write, path::PathBuf, str::FromStr};
 use yansi::Paint;
 
 /// Given a `Project`'s output, removes the matching ABI, Bytecode and
@@ -111,6 +109,20 @@ pub fn get_cached_entry_by_name(
     eyre::bail!(err)
 }
 
+/// Helper function to return the path of the contract which is executed
+// Used when contracts are built without cache
+pub fn get_output_artifact(target_name: &str, output: &ProjectCompileOutput) -> Result<PathBuf> {
+    let artifact = output
+        .artifact_ids()
+        .filter(|(artifact_id, _)| artifact_id.name.as_str() == target_name)
+        .map(|(artifact_id, _)| { eprintln!("{:?}", artifact_id); artifact_id.source})
+        .exactly_one();
+    let Ok(artifact) = artifact else {
+        eyre::bail!("Multiple or none contracts with name {} found", target_name)
+    };
+    Ok(artifact)
+}
+
 /// Returns error if constructor has arguments.
 pub fn ensure_clean_constructor(abi: &JsonAbi) -> Result<()> {
     if let Some(constructor) = &abi.constructor {
@@ -171,14 +183,14 @@ pub fn has_different_gas_calc(chain_id: u64) -> bool {
     if let Some(chain) = Chain::from(chain_id).named() {
         return matches!(
             chain,
-            NamedChain::Arbitrum |
-                NamedChain::ArbitrumTestnet |
-                NamedChain::ArbitrumGoerli |
-                NamedChain::ArbitrumSepolia |
-                NamedChain::Moonbeam |
-                NamedChain::Moonriver |
-                NamedChain::Moonbase |
-                NamedChain::MoonbeamDev
+            NamedChain::Arbitrum
+                | NamedChain::ArbitrumTestnet
+                | NamedChain::ArbitrumGoerli
+                | NamedChain::ArbitrumSepolia
+                | NamedChain::Moonbeam
+                | NamedChain::Moonriver
+                | NamedChain::Moonbase
+                | NamedChain::MoonbeamDev
         );
     }
     false
@@ -189,10 +201,10 @@ pub fn has_batch_support(chain_id: u64) -> bool {
     if let Some(chain) = Chain::from(chain_id).named() {
         return !matches!(
             chain,
-            NamedChain::Arbitrum |
-                NamedChain::ArbitrumTestnet |
-                NamedChain::ArbitrumGoerli |
-                NamedChain::ArbitrumSepolia
+            NamedChain::Arbitrum
+                | NamedChain::ArbitrumTestnet
+                | NamedChain::ArbitrumGoerli
+                | NamedChain::ArbitrumSepolia
         );
     }
     true
@@ -417,7 +429,7 @@ pub async fn handle_traces(
             .decoder(&decoder)
             .sources(sources)
             .build();
-        debugger.try_run()?;
+        debugger.try_run_tui()?;
     } else {
         print_traces(&mut result, &decoder).await?;
     }

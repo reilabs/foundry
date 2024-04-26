@@ -1,6 +1,6 @@
 use super::{install, test::filter::ProjectPathsAwareFilter, watch::WatchArgs};
 use alloy_primitives::U256;
-use clap::Parser;
+use clap::{Parser, ValueHint};
 use eyre::Result;
 use forge::{
     decode::decode_console_logs,
@@ -71,6 +71,14 @@ pub struct TestArgs {
     /// For more fine-grained control of which fuzz case is run, see forge run.
     #[arg(long, value_name = "TEST_FUNCTION")]
     debug: Option<Regex>,
+
+    /// Dumps all debugger steps to file.
+    #[arg(
+    long,
+    requires = "debug",
+    value_hint = ValueHint::FilePath,
+    )]
+    dump: Option<PathBuf>,
 
     /// Print a gas report.
     #[arg(long, env = "FORGE_GAS_REPORT")]
@@ -275,7 +283,7 @@ impl TestArgs {
 
         let config = Arc::new(config);
 
-        let runner = MultiContractRunnerBuilder::new(config.clone())
+        let runner = MultiContractRunnerBuilder::default()
             .set_debug(should_debug)
             .initial_balance(evm_opts.initial_balance)
             .evm_spec(config.evm_spec_id())
@@ -324,7 +332,11 @@ impl TestArgs {
                 builder = builder.decoder(decoder);
             }
             let mut debugger = builder.build();
-            debugger.try_run()?;
+            if let Some(dump_path) = self.dump {
+                debugger.dump_to_file(&dump_path)?;
+            } else {
+                debugger.try_run_tui()?;
+            }
         }
 
         Ok(outcome)
